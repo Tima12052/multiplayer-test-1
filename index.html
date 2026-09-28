@@ -3,17 +3,42 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Platformer Gun Fighter — Normal</title>
+<title>Platform Fighter</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>⚔ Platformer Gun Fighter — Normal Mode</h1>
-<div class="controls">
-  <p><strong>Player 1 (Blue):</strong> A / D move · W jump · Mouse aims · Left Click shoots</p>
-  <p><strong>Player 2 (Red):</strong> ← / → move · ↑ jump · L shoots (fires the way you're facing)</p>
-  <p>R — restart round · Walls block bullets, so use cover!</p>
-</div>
-<canvas id="gameCanvas" width="960" height="540"></canvas>
-<script src="game.js"></script>
+<main class="app-shell">
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">PF</div>
+    <div><p class="eyebrow">BROWSER ARENA</p><h1>Platform Fighter</h1></div>
+    <div id="connectionStatus" class="connection-status"><span></span> Offline</div>
+  </header>
+
+  <section id="lobby" class="lobby-panel" aria-labelledby="lobbyTitle">
+    <div class="lobby-copy">
+      <p class="eyebrow">1V1 · CROSS-DEVICE</p>
+      <h2 id="lobbyTitle">Take the high ground.</h2>
+      <p>Open this page on two devices. Create a room, then share its code.</p>
+    </div>
+    <div class="lobby-actions">
+      <button id="createRoom" class="primary-button" type="button">Create room</button>
+      <label class="room-entry"><span>Room code</span><input id="roomCode" maxlength="8" autocomplete="off" spellcheck="false" placeholder="e.g. A7K2QX"></label>
+      <button id="joinRoom" class="secondary-button" type="button">Join room</button>
+    </div>
+    <p id="lobbyMessage" class="lobby-message" role="status">Create a room or enter a friend's code.</p>
+    <div class="controls-note"><span>MOVE</span> A / D or ← / → <span>JUMP</span> W / ↑ / Space <span>SHOOT</span> Mouse click / Fire button</div>
+  </section>
+
+  <section id="match" class="match-panel" hidden>
+    <div class="match-bar"><span id="matchLabel">Room</span><button id="copyRoom" class="icon-button" type="button" title="Copy room code" aria-label="Copy room code">Copy code</button><button id="leaveRoom" class="icon-button leave-button" type="button">Leave</button></div>
+    <canvas id="gameCanvas" width="960" height="540" aria-label="Platform Fighter game"></canvas>
+    <div class="touch-controls" aria-label="Touch controls">
+      <div class="direction-controls"><button type="button" data-key="left" aria-label="Move left">←</button><button type="button" data-key="right" aria-label="Move right">→</button></div>
+      <div class="action-controls"><button type="button" data-key="jump" aria-label="Jump">Jump</button><button type="button" data-key="shoot" aria-label="Shoot">Fire</button></div>
+    </div>
+  </section>
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="game.js?v=20260928-2"></script>
 </body>
 </html>

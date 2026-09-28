@@ -1,10 +1,11 @@
-// Platformer Gun Fighter — Normal Mode
-// Local 2-player, same-keyboard multiplayer. Pure client-side JS/Canvas,
-// so it works as a static site (e.g. GitHub Pages) with no server needed.
-
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
+const lobby = document.getElementById('lobby');
+const match = document.getElementById('match');
+const roomCodeInput = document.getElementById('roomCode');
+const lobbyMessage = document.getElementById('lobbyMessage');
+const connectionStatus = document.getElementById('connectionStatus');
 
 const GRAVITY = 0.6;
 const JUMP_V = -12;
@@ -22,8 +23,8 @@ const platforms = [
   { x: 0,        y: H - 40, w: W,   h: 40 },   // ground
   { x: 140,      y: 420,    w: 160, h: 20 },
   { x: W - 300,  y: 420,    w: 160, h: 20 },
-  { x: 0,        y: 300,    w: 220, h: 20 },
-  { x: W - 220,  y: 300,    w: 220, h: 20 },
+  { x: 0,        y: 370,    w: 220, h: 20 },
+  { x: W - 220,  y: 370,    w: 220, h: 20 },
   { x: W / 2 - 90, y: 220,  w: 180, h: 20 },
   { x: 460,      y: 150,    w: 40,  h: 290 },  // central bullet-blocking wall
 ];
@@ -37,45 +38,211 @@ function makePlayer(x, y, color, name) {
   };
 }
 
-const p1 = makePlayer(100, H - 100, '#3aa1ff', 'P1');
-const p2 = makePlayer(W - 140, H - 100, '#ff4d4d', 'P2');
-
+const players = [makePlayer(100, H - 100, '#3aa1ff', 'P1'), makePlayer(W - 140, H - 100, '#ff4d4d', 'P2')];
+const [p1, p2] = players;
+p2.facing = -1;
 let bullets = [];
-const keys = {};
-let mouse = { x: W / 2, y: H / 2 };
+const input = { left: false, right: false, jump: false, shoot: false, shootPressed: false };
+const keyboardInput = { left: false, right: false, jump: false, shoot: false };
+const activeButtonPointers = new Map();
+const canvasShootPointers = new Set();
+let remoteInput = { left: false, right: false, jump: false, shoot: false, shootPressed: false };
+let peer = null;
+let connection = null;
+let isHost = false;
+let localPlayer = 0;
+let gameRunning = false;
+let lastStateSent = 0;
 
-window.addEventListener('keydown', e => {
-  const k = e.key.toLowerCase();
-  keys[k] = true;
-  if (!e.repeat && k === 'r') resetRound();
-});
-window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+function setStatus(label, state = '') {
+  connectionStatus.dataset.state = state;
+  connectionStatus.lastChild.textContent = ` ${label}`;
+}
 
-canvas.addEventListener('mousemove', e => {
-  const r = canvas.getBoundingClientRect();
-  mouse.x = (e.clientX - r.left) * (W / r.width);
-  mouse.y = (e.clientY - r.top) * (H / r.height);
-});
-canvas.addEventListener('mousedown', e => {
-  if (e.button === 0 && p1.shootCooldown <= 0) {
-    shoot(p1, mouse.x, mouse.y);
-    p1.shootCooldown = SHOOT_COOLDOWN;
+function setLobbyMessage(message) {
+  lobbyMessage.textContent = message;
+}
+
+function showMatch(code) {
+  lobby.hidden = true;
+  match.hidden = false;
+  document.getElementById('matchLabel').textContent = `ROOM  ${code}`;
+}
+
+function showLobby(message = 'Create a room or enter a friend\'s code.') {
+  gameRunning = false;
+  lobby.hidden = false;
+  match.hidden = true;
+  setStatus('Offline');
+  setLobbyMessage(message);
+}
+
+function closeConnection() {
+  gameRunning = false;
+  if (connection) connection.close();
+  if (peer) peer.destroy();
+  connection = null;
+  peer = null;
+}
+
+function startMatch(code) {
+  showMatch(code);
+  setStatus(isHost ? 'Waiting for opponent' : 'Connecting', 'waiting');
+}
+
+function startGame() {
+  gameRunning = true;
+  setStatus('Connected', 'connected');
+  if (isHost) resetRound();
+}
+
+document.getElementById('createRoom').addEventListener('click', () => {
+  if (!window.Peer) {
+    setLobbyMessage('Could not load the multiplayer service. Refresh and try again.');
+    return;
   }
+  closeConnection();
+  isHost = true;
+  localPlayer = 0;
+  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+  setLobbyMessage('Creating room...');
+  peer = new Peer(code, { debug: 1 });
+  peer.on('open', id => {
+    roomCodeInput.value = id;
+    startMatch(id);
+    setLobbyMessage('Share the room code. The match starts when your opponent joins.');
+  });
+  peer.on('connection', conn => {
+    if (connection) { conn.close(); return; }
+    connection = conn;
+    conn.on('open', startGame);
+    conn.on('data', data => {
+      if (data.type === 'input') {
+        const shootPressed = remoteInput.shootPressed || data.input.shootPressed;
+        remoteInput = data.input;
+        remoteInput.shootPressed = shootPressed;
+      }
+    });
+    conn.on('close', () => {
+      connection = null;
+      gameRunning = false;
+      setStatus('Opponent left', 'waiting');
+      setLobbyMessage('Your opponent disconnected. Share the room code to play again.');
+    });
+    conn.on('error', () => setLobbyMessage('Connection interrupted. Check both devices are online.'));
+  });
+  peer.on('error', error => {
+    const messages = { 'unavailable-id': 'That room code is already in use. Create another room.', 'peer-unavailable': 'Room not found. Check the code and try again.' };
+    closeConnection();
+    showLobby(messages[error.type] || 'Could not create the room. Please try again.');
+  });
+});
+
+document.getElementById('joinRoom').addEventListener('click', () => {
+  const code = roomCodeInput.value.trim().toUpperCase();
+  if (!code) { setLobbyMessage('Enter a room code first.'); return; }
+  if (!window.Peer) { setLobbyMessage('Could not load the multiplayer service. Refresh and try again.'); return; }
+  closeConnection();
+  isHost = false;
+  localPlayer = 1;
+  setLobbyMessage('Joining room...');
+  peer = new Peer({ debug: 1 });
+  peer.on('open', () => {
+    startMatch(code);
+    connection = peer.connect(code, { reliable: true });
+    connection.on('open', startGame);
+    connection.on('data', data => {
+      if (data.type === 'state') applyState(data.state);
+    });
+    connection.on('close', () => {
+      gameRunning = false;
+      setStatus('Opponent left', 'waiting');
+      setLobbyMessage('The host disconnected. Create a new room to play again.');
+    });
+    connection.on('error', () => setLobbyMessage('Connection interrupted. Check both devices are online.'));
+  });
+  peer.on('error', error => {
+    closeConnection();
+    showLobby(error.type === 'peer-unavailable' ? 'Room not found. Check the code and try again.' : 'Could not join the room. Please try again.');
+  });
+});
+
+document.getElementById('copyRoom').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(roomCodeInput.value);
+    document.getElementById('copyRoom').textContent = 'Copied';
+  } catch {
+    setLobbyMessage(`Room code: ${roomCodeInput.value}`);
+  }
+});
+
+document.getElementById('leaveRoom').addEventListener('click', () => {
+  closeConnection();
+  showLobby();
+});
+
+function syncAction(action) {
+  const pointers = activeButtonPointers.get(action);
+  const wasPressed = input[action];
+  input[action] = keyboardInput[action] || Boolean(pointers?.size) || (action === 'shoot' && canvasShootPointers.size > 0);
+  if (action === 'shoot' && input.shoot && !wasPressed) input.shootPressed = true;
+}
+
+canvas.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'mouse' || e.button === 0) {
+    canvasShootPointers.add(e.pointerId);
+    syncAction('shoot');
+  }
+});
+const releaseCanvasShoot = e => {
+  if (canvasShootPointers.delete(e.pointerId)) syncAction('shoot');
+};
+window.addEventListener('pointerup', releaseCanvasShoot);
+window.addEventListener('pointercancel', releaseCanvasShoot);
+
+const keyActions = { a: 'left', arrowleft: 'left', d: 'right', arrowright: 'right', w: 'jump', arrowup: 'jump', ' ': 'jump' };
+window.addEventListener('keydown', e => {
+  const key = e.key.toLowerCase();
+  if (keyActions[key]) { keyboardInput[keyActions[key]] = true; syncAction(keyActions[key]); e.preventDefault(); }
+  if (key === 'r' && !e.repeat && isHost) resetRound();
+});
+window.addEventListener('keyup', e => {
+  const action = keyActions[e.key.toLowerCase()];
+  if (action) { keyboardInput[action] = false; syncAction(action); }
+});
+document.querySelectorAll('.touch-controls button').forEach(button => {
+  const action = button.dataset.key;
+  const release = e => {
+    const pointers = activeButtonPointers.get(action);
+    pointers?.delete(e.pointerId);
+    syncAction(action);
+    button.classList.toggle('is-pressed', Boolean(pointers?.size));
+  };
+  button.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    button.setPointerCapture(e.pointerId);
+    const pointers = activeButtonPointers.get(action) || new Set();
+    pointers.add(e.pointerId);
+    activeButtonPointers.set(action, pointers);
+    syncAction(action);
+    button.classList.add('is-pressed');
+  });
+  button.addEventListener('pointerup', release);
+  button.addEventListener('pointercancel', release);
+  button.addEventListener('lostpointercapture', release);
 });
 
 function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-function shoot(player, tx, ty) {
+function shoot(player) {
   if (!player.alive) return;
   const cx = player.x + player.w / 2;
   const cy = player.y + player.h / 2;
-  const dx = tx - cx, dy = ty - cy;
-  const len = Math.hypot(dx, dy) || 1;
   bullets.push({
     x: cx, y: cy,
-    vx: (dx / len) * BULLET_SPEED, vy: (dy / len) * BULLET_SPEED,
+    vx: player.facing * BULLET_SPEED, vy: 0,
     owner: player, r: BULLET_RADIUS,
   });
 }
@@ -143,26 +310,17 @@ function resetRound() {
   bullets = [];
 }
 
-function handleInput() {
-  p1.vx = 0;
-  if (p1.alive) {
-    if (keys['a']) { p1.vx = -MOVE_SPEED; p1.facing = -1; }
-    if (keys['d']) { p1.vx = MOVE_SPEED; p1.facing = 1; }
-    if (keys['w'] && p1.onGround) p1.vy = JUMP_V;
+function handlePlayerInput(player, controls) {
+  player.vx = 0;
+  if (!player.alive) return;
+  if (controls.left) { player.vx = -MOVE_SPEED; player.facing = -1; }
+  if (controls.right) { player.vx = MOVE_SPEED; player.facing = 1; }
+  if (controls.jump && player.onGround) player.vy = JUMP_V;
+  if ((controls.shoot || controls.shootPressed) && player.shootCooldown <= 0) {
+    shoot(player);
+    player.shootCooldown = SHOOT_COOLDOWN;
   }
-
-  p2.vx = 0;
-  if (p2.alive) {
-    if (keys['arrowleft']) { p2.vx = -MOVE_SPEED; p2.facing = -1; }
-    if (keys['arrowright']) { p2.vx = MOVE_SPEED; p2.facing = 1; }
-    if (keys['arrowup'] && p2.onGround) p2.vy = JUMP_V;
-    if (keys['l'] && p2.shootCooldown <= 0) {
-      const cx = p2.x + p2.w / 2, cy = p2.y + p2.h / 2;
-      shoot(p2, cx + p2.facing * 300, cy);
-      p2.shootCooldown = SHOOT_COOLDOWN;
-    }
-  }
-  if (p2.shootCooldown > 0) p2.shootCooldown--;
+  controls.shootPressed = false;
 }
 
 function updateBullets() {
@@ -205,8 +363,8 @@ function drawHPBar(x, y, hp, color) {
 function drawHUD() {
   ctx.fillStyle = '#fff';
   ctx.font = '15px sans-serif';
-  ctx.fillText(`${p1.name}  HP ${p1.hp}  Score ${p1.score}`, 20, 24);
-  ctx.fillText(`${p2.name}  HP ${p2.hp}  Score ${p2.score}`, W - 210, 24);
+  ctx.fillText(`${p1.name}${localPlayer === 0 ? ' (YOU)' : ''}  HP ${p1.hp}  Score ${p1.score}`, 20, 24);
+  ctx.fillText(`${p2.name}${localPlayer === 1 ? ' (YOU)' : ''}  HP ${p2.hp}  Score ${p2.score}`, W - 270, 24);
   drawHPBar(20, 32, p1.hp, '#3aa1ff');
   drawHPBar(W - 220, 32, p2.hp, '#ff4d4d');
 }
@@ -229,21 +387,40 @@ function draw() {
     ctx.fill();
   }
 
-  ctx.strokeStyle = '#ffffffaa';
-  ctx.beginPath();
-  ctx.moveTo(mouse.x - 8, mouse.y); ctx.lineTo(mouse.x + 8, mouse.y);
-  ctx.moveTo(mouse.x, mouse.y - 8); ctx.lineTo(mouse.x, mouse.y + 8);
-  ctx.stroke();
-
   drawHUD();
 }
 
-function loop() {
-  handleInput();
-  updatePlayerPhysics(p1);
-  updatePlayerPhysics(p2);
-  updateBullets();
-  draw();
+function serializeState() {
+  return {
+    players: players.map(({ x, y, vx, vy, onGround, facing, hp, alive, respawnTimer, score, shootCooldown }) => ({ x, y, vx, vy, onGround, facing, hp, alive, respawnTimer, score, shootCooldown })),
+    bullets: bullets.map(b => ({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, owner: b.owner === p1 ? 0 : 1, r: b.r })),
+  };
+}
+
+function applyState(state) {
+  state.players.forEach((snapshot, i) => Object.assign(players[i], snapshot));
+  bullets = state.bullets.map(b => ({ ...b, owner: players[b.owner] }));
+}
+
+function loop(timestamp) {
+  if (gameRunning) {
+    if (isHost) {
+      handlePlayerInput(p1, input);
+      handlePlayerInput(p2, remoteInput);
+      updatePlayerPhysics(p1);
+      updatePlayerPhysics(p2);
+      updateBullets();
+      if (connection && timestamp - lastStateSent > 33) {
+        connection.send({ type: 'state', state: serializeState() });
+        lastStateSent = timestamp;
+      }
+    } else if (connection && connection.open) {
+      connection.send({ type: 'input', input: { ...input } });
+      input.shootPressed = false;
+    }
+    draw();
+  }
   requestAnimationFrame(loop);
 }
+draw();
 loop();
